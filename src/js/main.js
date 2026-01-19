@@ -1,7 +1,7 @@
 /**
  * NutriPlan - Main Entry Point
  * Initializes all modules and wires the app together
- * Version 1.13 - Added NutritionService and products by category
+ * Version 1.14 - Integrated NutritionService for real USDA nutrition data
  */
 
 // Import core classes - v1.13 cache bust
@@ -37,7 +37,7 @@ class NutriPlanApp {
 
         // Initialize UI controllers
         this.uiController = new UIController();
-        this.mealsUI = new MealsUI(this.mealService, this.foodLog, this.uiController, this.router);
+        this.mealsUI = new MealsUI(this.mealService, this.foodLog, this.uiController, this.router, this.nutritionService);
         this.foodLogUI = new FoodLogUI(this.foodLog, this.uiController, this.router);
         this.productsUI = new ProductsUI(this.productService, this.foodLog, this.uiController);
 

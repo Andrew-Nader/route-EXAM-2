@@ -3,11 +3,12 @@
  * Manages meal cards, categories, and meal details
  */
 export class MealsUI {
-    constructor(mealService, foodLog, uiController, router) {
+    constructor(mealService, foodLog, uiController, router, nutritionService = null) {
         this.mealService = mealService;
         this.foodLog = foodLog;
         this.uiController = uiController;
         this.router = router;
+        this.nutritionService = nutritionService;
 
         this.elements = {
             categoriesGrid: document.getElementById('categories-grid'),
@@ -395,10 +396,140 @@ export class MealsUI {
         try {
             const meal = await this.mealService.getMealById(mealId);
             if (meal) {
+                // First render with estimated nutrition (fast)
                 this.renderMealDetails(meal);
+
+                // Then try to fetch real nutrition data from USDA API
+                await this.fetchRealNutrition(meal);
             }
         } catch (error) {
             console.error('Error loading meal details:', error);
+        }
+    }
+
+    /**
+     * Fetch real nutrition data from USDA API and update display
+     * @param {object} meal - The meal object
+     */
+    async fetchRealNutrition(meal) {
+        // Check if nutrition service is available
+        if (!this.nutritionService || !this.nutritionService.hasApiKey()) {
+            console.log('ℹ️ NutritionService not available, using estimated nutrition');
+            return;
+        }
+
+        const mealName = meal.name || meal.strMeal;
+        const ingredients = meal.ingredients || this.mealService.getIngredients(meal);
+
+        // Format ingredients for API: "measure ingredient"
+        const ingredientStrings = ingredients.map(ing => {
+            const measure = ing.measure || '';
+            const ingredient = ing.ingredient || '';
+            return `${measure} ${ingredient}`.trim();
+        }).filter(s => s);
+
+        if (ingredientStrings.length === 0) {
+            console.log('ℹ️ No ingredients found, using estimated nutrition');
+            return;
+        }
+
+        // Show loading indicator on nutrition section
+        this.showNutritionLoading();
+
+        try {
+            console.log('🔬 Fetching real nutrition data from USDA...');
+            const result = await this.nutritionService.analyzeRecipe(mealName, ingredientStrings);
+
+            if (result && result.success !== false) {
+                console.log('✅ Real nutrition data received:', result);
+
+                // Convert API response to our nutrition format
+                const realNutrition = this.convertApiNutrition(result);
+
+                // Update the display with real data
+                const section = document.getElementById('meal-details');
+                this.renderNutrition(section, realNutrition, null, true);
+
+                // Update current meal for logging
+                if (this.currentMeal) {
+                    this.currentMeal.nutrition = realNutrition;
+                    this.currentMeal.isRealNutrition = true;
+                }
+
+                // Update hero calories
+                const heroCalories = section?.querySelector('#hero-calories');
+                if (heroCalories) {
+                    heroCalories.textContent = `${realNutrition.calories} cal/serving`;
+                }
+            }
+        } catch (error) {
+            console.warn('⚠️ Could not fetch real nutrition, using estimates:', error.message);
+            this.hideNutritionLoading();
+        }
+    }
+
+    /**
+     * Convert API nutrition response to our format
+     * @param {object} apiResult - Result from nutritionService.analyzeRecipe()
+     */
+    convertApiNutrition(apiResult) {
+        const perServing = apiResult.perServing || apiResult.totals || {};
+        const servings = apiResult.servings || 4;
+
+        return {
+            calories: Math.round(perServing.calories || 0),
+            protein: Math.round(perServing.protein || 0),
+            carbs: Math.round(perServing.carbs || 0),
+            fat: Math.round(perServing.fat || 0),
+            fiber: Math.round(perServing.fiber || 0),
+            sugar: Math.round(perServing.sugar || 0),
+            saturatedFat: Math.round(perServing.saturatedFat || 0),
+            cholesterol: Math.round(perServing.cholesterol || 0),
+            sodium: Math.round(perServing.sodium || 0),
+            // Vitamins - API doesn't provide these, use placeholder
+            vitaminA: 0,
+            vitaminC: 0,
+            vitaminD: 0,
+            calcium: 0,
+            iron: 0,
+            potassium: 0,
+            dietLabels: ['USDA Verified'],
+            servings: servings,
+            isRealData: true,
+            totalWeight: apiResult.totalWeight || 0
+        };
+    }
+
+    /**
+     * Show loading state on nutrition section
+     */
+    showNutritionLoading() {
+        const container = document.getElementById('nutrition-facts-container');
+        if (container) {
+            container.classList.add('opacity-50');
+            const loadingBadge = document.getElementById('nutrition-loading-badge');
+            if (!loadingBadge) {
+                const badge = document.createElement('div');
+                badge.id = 'nutrition-loading-badge';
+                badge.className = 'absolute top-4 right-4 bg-blue-500 text-white text-xs px-2 py-1 rounded-full animate-pulse';
+                badge.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Loading USDA data...';
+                container.style.position = 'relative';
+                container.appendChild(badge);
+            }
+        }
+    }
+
+    /**
+     * Hide loading state on nutrition section
+     */
+    hideNutritionLoading() {
+        const container = document.getElementById('nutrition-facts-container');
+        if (container) {
+            container.classList.remove('opacity-50');
+            const loadingBadge = document.getElementById('nutrition-loading-badge');
+            if (loadingBadge) {
+                loadingBadge.remove();
+            }
         }
     }
 
@@ -539,10 +670,35 @@ export class MealsUI {
 
     /**
      * Render nutrition facts - comprehensive display
+     * @param {Element} section - The section element
+     * @param {object} nutrition - Nutrition data object
+     * @param {string} mealSourceUrl - Optional source URL
+     * @param {boolean} isRealData - Whether this is real USDA data or estimated
      */
-    renderNutrition(section, nutrition, mealSourceUrl = null) {
+    renderNutrition(section, nutrition, mealSourceUrl = null, isRealData = false) {
         const nutritionContainer = document.getElementById('nutrition-facts-container');
         if (!nutritionContainer) return;
+
+        // Hide loading indicator
+        this.hideNutritionLoading();
+
+        // Add or update data source badge
+        let dataBadge = document.getElementById('nutrition-data-source');
+        if (!dataBadge) {
+            dataBadge = document.createElement('div');
+            dataBadge.id = 'nutrition-data-source';
+            dataBadge.className = 'absolute top-4 right-4 text-xs px-2 py-1 rounded-full font-semibold';
+            nutritionContainer.style.position = 'relative';
+            nutritionContainer.appendChild(dataBadge);
+        }
+
+        if (isRealData || nutrition.isRealData) {
+            dataBadge.className = 'absolute top-4 right-4 text-xs px-2 py-1 rounded-full font-semibold bg-green-100 text-green-700';
+            dataBadge.innerHTML = '<i class="fa-solid fa-check-circle mr-1"></i> USDA Verified';
+        } else {
+            dataBadge.className = 'absolute top-4 right-4 text-xs px-2 py-1 rounded-full font-semibold bg-amber-100 text-amber-700';
+            dataBadge.innerHTML = '<i class="fa-solid fa-calculator mr-1"></i> Estimated';
+        }
 
         // Update calorie display
         const calorieValue = document.getElementById('calorie-value');
@@ -628,7 +784,8 @@ export class MealsUI {
                 'Indulgent': 'bg-amber-100 text-amber-700',
                 'Comfort-Food': 'bg-yellow-100 text-yellow-700',
                 'Light': 'bg-teal-100 text-teal-700',
-                'Breakfast': 'bg-orange-100 text-orange-700'
+                'Breakfast': 'bg-orange-100 text-orange-700',
+                'USDA Verified': 'bg-green-100 text-green-700'
             };
 
             if (nutrition.dietLabels && nutrition.dietLabels.length > 0) {
